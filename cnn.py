@@ -138,13 +138,13 @@ def forward(features, modules):
 
 
 def evaluate_accuracy(data_iter, modules):
-    acc, time = 0, 0
+    accuracy, time = 0, 0
     for x, y in tqdm(data_iter, desc='Testing', ascii=True, unit="batch", file=sys.stdout):
         y_hat = forward(x, modules)
         cmp = np.asnumpy(y_hat).argmax(axis=1) == y.numpy()
-        acc += cmp.sum() / len(cmp)
+        accuracy += cmp.sum() / len(cmp)
         time += 1
-    return acc / time
+    return accuracy / time
 
 
 if __name__ == '__main__':
