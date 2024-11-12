@@ -59,7 +59,7 @@ class Conv2d:
         for i in range(height):
             for j in range(height):
                 grad_x[:, :, i:i + self.kernel_size, j:j + self.kernel_size] += (
-                        dout[:, :, i, j].reshape(-1, self.out_c, 1, 1, 1) * self.weights[:, :, :, :]).sum(axis=1)
+                        dout[:, :, i, j].reshape(-1, self.out_c, 1, 1, 1) * self.weights).sum(axis=1)
         self.grad_b = dout.mean(axis=0)
         return grad_x[:, :, self.padding:self.origin_len + self.padding, self.padding:self.origin_len + self.padding]
 
@@ -150,10 +150,10 @@ def evaluate_accuracy(data_iter, modules):
 if __name__ == '__main__':
     batch_size, num_classes = 256, 10
     train_iter, val_iter = F.load_data_fashion_mnist(batch_size)
-    epochs = 200
+    epochs = 50
     modules = [Conv2d(in_channels=1, out_channels=4), F.Relu(), Conv2d(in_channels=4, out_channels=8), F.Relu(),
               Pool2d(), Conv2d(8, 32), F.Relu(), Conv2d(32, 64), F.Relu(), Pool2d(), Linear(4 * 4 * 64, num_classes)]
-    # 重写nn.Sequential
+    # 重写nn.Sequential，即可将面向过程改成面向对象，将forward方法封装进Sequential类的__call__方法中
     alpha = 0.001
 
     for t in range(epochs):
