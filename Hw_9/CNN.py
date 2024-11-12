@@ -2,13 +2,64 @@
 # coding:UTF-8
 import os
 from tqdm import tqdm
-import functional as F
-from torch.utils.dlpack import to_dlpack
 import sys
 import cupy as np
+import random
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 """不考虑矩形卷积核"""
+
+
+def onehotEncoder(Y, ny):
+    return np.eye(ny)[Y]
+
+
+def cross_entropy(y_hat_, y):  # 返回的为一个向量,输入y与y_hat都为矩阵
+    return -np.log(y_hat_[range(len(y_hat_)), y]).mean()
+
+
+def softmax(x):  # X是一个矩阵为经过线性层后的特征量
+    X_exp = np.exp(x)
+    partition = X_exp.sum(1, keepdims=True)
+    return X_exp / partition
+
+
+class Relu:
+    def __init__(self):
+        self.mask = None
+
+    def __call__(self, X):
+        self.mask = np.where(X > 0, np.array(1), np.array(0.01))
+        return X * self.mask
+
+    def backward(self, dout):
+        return dout * self.mask
+
+
+class Dataloader:
+    def __init__(self, batch_size):
+        dataset = np.load('data.npy')
+        self.images = np.expand_dims((dataset[:, :-1].reshape(dataset.shape[0], 20, 20).transpose(0, 2, 1)), 1)
+        self.labels = dataset[:, -1].astype(np.int32)
+        self.batch_size = batch_size
+
+        self.num_samples = len(dataset)
+        self.indices = list(range(self.num_samples))
+        random.shuffle(self.indices)
+
+    def __iter__(self):
+        self.i = 0
+        return self
+
+    def __next__(self):
+        batch_indices = self.indices[self.i: min(self.i + self.batch_size, self.num_samples)]
+        self.i += len(batch_indices)
+        if self.i >= self.num_samples:
+            raise StopIteration
+        return self.images[batch_indices], self.labels[batch_indices]
+
+    def __len__(self):
+        return self.num_samples // self.batch_size
 
 
 class Conv2d:
@@ -44,8 +95,8 @@ class Conv2d:
         return outputs
 
     def init_weights(self):
-        self.weights = np.random.normal(0, 0.29, size=(self.out_c, self.in_c, self.kernel_size,
-                                                       self.kernel_size)).astype(np.float32)
+        self.weights = np.random.normal(0, 0.29, size=(self.out_c, self.in_c, self.kernel_size, self.kernel_size))
+        # self.weights = xavier_init(shape=(self.out_c, self.in_c, self.kernel_size, self.kernel_size))
         self.bias = np.random.normal(0, 0.01, (self.out_c, self.out_size, self.out_size))
 
     def backward(self, dout):
@@ -110,7 +161,7 @@ class Linear:
     def __init__(self, num_hiddens, num_classes):
         self.num_hiddens = num_hiddens
         self.num_classes = num_classes
-        self.weights = np.random.normal(0, 0.03, size=(num_hiddens, num_classes)).astype(np.float32)
+        self.weights = np.random.normal(0, 0.03, size=(num_hiddens, num_classes))
         self.bias = np.random.normal(0, 0.01, (1, num_classes))
         self.origin_Shape = None
         self.X = None
@@ -129,49 +180,80 @@ class Linear:
         return np.dot(dout, self.weights.T).reshape(*self.origin_Shape)
 
 
-def forward(features, modules):
-    # features = features.numpy().astype(np.float32)
-    features = np.from_dlpack(to_dlpack(features.to("cuda")))
-    for module in modules:
-        features = module(features)
-    return F.softmax(features)
+class Sequential:
+    def __init__(self, *args):
+        self._module = dict()
+        for id_, module in enumerate(args):
+            self._module[str(id_)] = module
+
+    def __call__(self, features):
+        for block in self._module.values():
+            features = block(features)
+        return softmax(features)
+
+    def backward(self, dout):
+        for module in reversed(list(self._module.values())):
+            dout = module.backward(dout)
+            if hasattr(module, 'weights'):
+                # 改为Adam时可直接将权重作为参数传入，同时传入index作为module的编号
+                module.weights -= module.grad_w * alpha
+                module.bias -= module.grad_b * alpha
 
 
-def evaluate_accuracy(data_iter, modules):
-    accuracy, time = 0, 0
-    for x, y in tqdm(data_iter, desc='Testing', ascii=True, unit="batch", file=sys.stdout):
-        y_hat = forward(x, modules)
-        cmp = np.asnumpy(y_hat).argmax(axis=1) == y.numpy()
-        accuracy += cmp.sum() / len(cmp)
-        time += 1
-    return accuracy / time
+class Accumulator:
+    def __init__(self, n):
+        self.data = [0.0] * n
+
+    def add(self, *args):
+        self.data = [a + float(b) for a, b in zip(self.data, args)]
+
+    def reset(self):
+        self.data = [0.0] * len(self.data)
+
+    def __getitem__(self, item):
+        return self.data[item]
+
+
+def xavier_init(shape, distribution='normal'):
+    fan_in = shape[1] * shape[2] * shape[3]
+    fan_out = shape[0] * shape[2] * shape[3]
+
+    if distribution == 'uniform':
+        limit = np.sqrt(6 / (fan_in + fan_out))
+        return np.random.uniform(-limit, limit, size=shape)
+    elif distribution == 'normal':
+        std = np.sqrt(2 / (fan_in + fan_out))
+        return np.random.normal(0, std, size=shape)
+    else:
+        raise ValueError("Invalid distribution type. Choose 'uniform' or 'normal'.")
+
+
+def test(Y_hat, Y):
+    Y_out = np.zeros_like(Y)
+    idx = np.argmax(Y_hat, axis=1)
+    Y_out[range(Y.shape[0]), idx] = 1
+    accuracy = np.sum(Y_out * Y) / Y.shape[0]
+    return accuracy
 
 
 if __name__ == '__main__':
     batch_size, num_classes = 32, 10
+    train_iter = Dataloader(batch_size)
+    epochs, alpha = 50, 0.01
+    net = Sequential(Conv2d(in_channels=1, out_channels=32, padding=1), Relu(), Pool2d(),
+               Conv2d(in_channels=32, out_channels=64, padding=1), Relu(), Pool2d(), Linear(5 * 5 * 64, num_classes))
+    metric = Accumulator(3)
 
-    # epochs = 50
-    # modules = [Conv2d(in_channels=1, out_channels=4), F.Relu(), Conv2d(in_channels=4, out_channels=8), F.Relu(),
-    #           Pool2d(), Conv2d(8, 32), F.Relu(), Conv2d(32, 64), F.Relu(), Pool2d(), Linear(4 * 4 * 64, num_classes)]
-    # # 重写nn.Sequential，即可将面向过程改成面向对象，将forward方法封装进Sequential类的__call__方法中
-    # alpha = 0.001
-    #
-    # for t in range(epochs):
-    #     cost, iteration = 0, 0
-    #     pbar = tqdm(train_iter, ascii=True, unit="batch", file=sys.stdout)
-    #     for X, y in pbar:
-    #         y_hat = forward(X, modules)
-    #         loss = F.cross_entropy(y_hat, y)
-    #         cost += loss
-    #         iteration += 1
-    #         # 反向传播
-    #         dout = y_hat - np.eye(num_classes)[y]
-    #         for index, module in enumerate(reversed(modules)):
-    #             dout = module.backward(dout)
-    #             if type(module) == Linear or type(module) == Conv2d:
-    #                 # 改为Adam时可直接将权重作为参数传入，同时传入index作为module的编号
-    #                 module.weights -= module.grad_w * alpha
-    #                 module.bias -= module.grad_b * alpha
-    #         pbar.set_description('Training: epoch {0}/{1}  loss:{2:.3f}'.format(t + 1, epochs, loss))
-    #     acc = evaluate_accuracy(val_iter, modules)
-    #     print(f"=============== Test Accuracy:{acc} Loss:{cost / iteration}===============\n")
+    for t in range(epochs):
+        pbar = tqdm(train_iter, ascii=True, unit="batch", file=sys.stdout)
+        for X, y in pbar:
+            y_hat = net(X)
+            loss = cross_entropy(y_hat, y)
+            acc = test(y_hat, onehotEncoder(y, 10))
+            # 反向传播
+            dout = y_hat - np.eye(num_classes)[y]  # softmax层
+            net.backward(dout)
+            pbar.set_description('Training: epoch {0}/{1}  loss:{2:.3f}'.format(t + 1, epochs, loss))
+            metric.add(loss, acc, 1)
+        print(f"============= Training Accuracy:{metric[1] / metric[2]} Loss:{metric[0] / metric[2]}=============\n")
+        metric.reset()
