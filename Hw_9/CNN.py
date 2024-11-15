@@ -96,7 +96,6 @@ class Conv2d:
 
     def init_weights(self):
         self.weights = np.random.normal(0, 0.29, size=(self.out_c, self.in_c, self.kernel_size, self.kernel_size))
-        # self.weights = xavier_init(shape=(self.out_c, self.in_c, self.kernel_size, self.kernel_size))
         self.bias = np.random.normal(0, 0.01, (self.out_c, self.out_size, self.out_size))
 
     def backward(self, dout):

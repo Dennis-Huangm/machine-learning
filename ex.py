@@ -28,3 +28,8 @@ def f(arr):
 
 f(img)
 print(img)
+
+
+a = torch.arange(4).reshape(2, 2)
+print(a)
+print(a[1,:])
