@@ -37,7 +37,7 @@ class Relu:
 
 
 class Dataloader:
-    def __init__(self, batch_size):
+    def __init__(self, batch_size: int):
         dataset = np.load('data.npy')
         self.images = np.expand_dims((dataset[:, :-1].reshape(dataset.shape[0], 20, 20).transpose(0, 2, 1)), 1)
         self.labels = dataset[:, -1].astype(np.int32)
@@ -79,7 +79,7 @@ class Conv2d:
         self.out_size = None
         self.init = False
 
-    def __call__(self, X):  # 输入X为4维[batch_size,num_channels,height,width]
+    def __call__(self, X):  # 输入X为4维[batch_size, num_channels, height, width]
         self.origin_len = X.shape[-1]
         self.out_size = int((self.origin_len - self.kernel_size + 2 * self.padding) + 1)
         if not self.init:
@@ -125,8 +125,7 @@ class Pool2d:  # 超出自动补零
     def __call__(self, X):
         self.X = X
         len = X.shape[-1]
-        scale = len / self.stride
-        out_size = int(scale) + 1 if scale % 1 else int(scale)
+        out_size = int((len - self.pool_size) / self.stride + 1.5)
         outputs = np.zeros((X.shape[0], X.shape[1], out_size, out_size))
         self.maps = np.zeros(X.shape)
         for i in range(out_size):
@@ -240,7 +239,8 @@ if __name__ == '__main__':
     train_iter = Dataloader(batch_size)
     epochs, alpha = 50, 0.01
     net = Sequential(Conv2d(in_channels=1, out_channels=32, padding=1), Relu(), Pool2d(),
-               Conv2d(in_channels=32, out_channels=64, padding=1), Relu(), Pool2d(), Linear(5 * 5 * 64, num_classes))
+                     Conv2d(in_channels=32, out_channels=64, padding=1), Relu(), Pool2d(),
+                     Linear(5 * 5 * 64, num_classes))
     metric = Accumulator(3)
 
     for t in range(epochs):
