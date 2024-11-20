@@ -5,8 +5,6 @@ from tqdm import tqdm
 import sys
 import cupy as np
 import random
-
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 """不考虑矩形卷积核"""
 
 
